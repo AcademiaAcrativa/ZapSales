@@ -38,14 +38,28 @@ export default function App() {
 
   // Core App States
   const [isWhatsAppConnected, setIsWhatsAppConnected] = useState<ConnectionStatus>("disconnected");
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [sales, setSales] = useState<SaleRecord[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>(INITIAL_CUSTOMERS);
+  const [sales, setSales] = useState<SaleRecord[]>(INITIAL_SALES);
   const [customTriggers, setCustomTriggers] = useState<CustomTrigger[]>(INITIAL_TRIGGERS);
   const [botSettings, setBotSettings] = useState<BotSettings>(DEFAULT_SETTINGS);
   const [activeCustomerId, setActiveCustomerId] = useState<string | null>(null);
 
   // Messages State indexed by customerId
-  const [messagesByCustomer, setMessagesByCustomer] = useState<Record<string, Message[]>>({});
+  const [messagesByCustomer, setMessagesByCustomer] = useState<Record<string, Message[]>>(() => {
+    const initial: Record<string, Message[]> = {};
+    INITIAL_CUSTOMERS.forEach((customer) => {
+      const predefined = SIMULATED_CONVERSATIONS[customer.id] || [];
+      initial[customer.id] = predefined.map((p, idx) => ({
+        id: `msg-${customer.id}-${idx}`,
+        text: p.text,
+        sender: p.sender,
+        timestamp: p.timestamp,
+        isSale: p.text.includes("[VENDA:"),
+        saleInfo: p.text.includes("[VENDA:") ? { product: "Peça do Catálogo", value: 120 } : undefined,
+      }));
+    });
+    return initial;
+  });
 
   // Helper to parse sale information from tags
   const parseSaleText = (text: string) => {
@@ -61,54 +75,146 @@ export default function App() {
     return undefined;
   };
 
+  // Connect to SSE backend for real-time WhatsApp updates
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const eventSource = new EventSource("/api/whatsapp/events");
+
+    eventSource.addEventListener("status", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setIsWhatsAppConnected(data.status);
+      } catch (err) {
+        console.error("Erro ao processar status do SSE:", err);
+      }
+    });
+
+    eventSource.addEventListener("message", (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        const { id, sender, senderNumber, senderName, text, timestamp, saleDetected } = msg;
+
+        // 1. Add/Update customer in list
+        setCustomers((prev) => {
+          const exists = prev.some((c) => c.id === senderNumber);
+          if (exists) {
+            return prev.map((c) => {
+              if (c.id === senderNumber) {
+                const nextSpent = c.totalSpent + (saleDetected ? saleDetected.value : 0);
+                const nextScore = Math.min(100, c.leadScore + 5 + (saleDetected ? 40 : 0));
+                return {
+                  ...c,
+                  name: senderName || c.name,
+                  lastMessage: text.length > 45 ? `${text.substring(0, 42)}...` : text,
+                  lastMessageTime: timestamp,
+                  messageCount: c.messageCount + 1,
+                  totalSpent: nextSpent,
+                  leadScore: nextScore,
+                  unreadCount: (sender === "user" && activeCustomerId !== senderNumber) ? c.unreadCount + 1 : c.unreadCount,
+                };
+              }
+              return c;
+            });
+          } else {
+            // New customer from real WhatsApp!
+            const newCust: Customer = {
+              id: senderNumber,
+              name: senderName || `Contato ${senderNumber.replace(/\D/g, "")}`,
+              phone: `+${senderNumber.replace(/\D/g, "")}`,
+              avatar: `https://api.dicebear.com/7.x/adventurer/svg?seed=${senderNumber}`,
+              status: "active",
+              tags: ["WhatsApp"],
+              lastMessage: text.length > 45 ? `${text.substring(0, 42)}...` : text,
+              lastMessageTime: timestamp,
+              messageCount: 1,
+              totalSpent: saleDetected ? saleDetected.value : 0,
+              leadScore: saleDetected ? 75 : 35,
+              unreadCount: activeCustomerId !== senderNumber ? 1 : 0,
+            };
+            return [newCust, ...prev];
+          }
+        });
+
+        // 2. Append message to chat
+        setMessagesByCustomer((prev) => {
+          const list = prev[senderNumber] || [];
+          return {
+            ...prev,
+            [senderNumber]: [
+              ...list,
+              {
+                id: id || `msg-${Date.now()}`,
+                text,
+                sender,
+                timestamp,
+                isSale: !!saleDetected,
+                saleInfo: saleDetected || undefined,
+              },
+            ],
+          };
+        });
+
+        // 3. Register sale if detected
+        if (saleDetected) {
+          setSales((prev) => [
+            {
+              id: `sale-${Date.now()}`,
+              customerId: senderNumber,
+              customerName: senderName || `Contato ${senderNumber.replace(/\D/g, "")}`,
+              productName: saleDetected.product,
+              value: saleDetected.value,
+              timestamp,
+              date: new Date().toLocaleDateString("pt-BR"),
+            },
+            ...prev,
+          ]);
+        }
+
+      } catch (err) {
+        console.error("Erro ao processar mensagem do SSE:", err);
+      }
+    });
+
+    return () => {
+      eventSource.close();
+    };
+  }, [isAuthenticated, activeCustomerId]);
+
+  // Synchronize chatbot settings with the backend
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    
+    fetch("/api/whatsapp/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        settings: botSettings,
+        triggers: customTriggers,
+      }),
+    }).catch((err) => console.error("Erro ao sincronizar configurações do bot com o servidor:", err));
+  }, [botSettings, customTriggers, isAuthenticated]);
+
   // State Handler: Connection status change
   const handleConnectionStatusChange = (newStatus: ConnectionStatus) => {
     setIsWhatsAppConnected(newStatus);
     
     if (newStatus === "connected") {
-      // Load and sync customers upon connection
-      setCustomers(INITIAL_CUSTOMERS);
-      
-      const initialMessages: Record<string, Message[]> = {};
-      INITIAL_CUSTOMERS.forEach((customer) => {
-        const predefined = SIMULATED_CONVERSATIONS[customer.id] || [];
-        initialMessages[customer.id] = predefined.map((p, idx) => ({
-          id: `msg-${customer.id}-${idx}`,
-          text: p.text,
-          sender: p.sender,
-          timestamp: p.timestamp,
-          isSale: p.text.includes("[VENDA:"),
-          saleInfo: p.text.includes("[VENDA:") ? parseSaleText(p.text) : undefined,
-        }));
-        
-        // Append system log
-        initialMessages[customer.id].push({
-          id: `sys-${Date.now()}-${customer.id}`,
-          text: "📡 WhatsApp conectado com sucesso! O robô de respostas automáticas está ATIVO.",
-          sender: "system",
-          timestamp: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
-        });
-      });
-      setMessagesByCustomer(initialMessages);
-    } else {
-      // Add system disconnect logs to all active chats notifying the user
-      const textLog = "⚠️ WhatsApp desconectado. Respostas automáticas desativadas temporariamente.";
-
-      setMessagesByCustomer((prev) => {
-        const updated = { ...prev };
-        Object.keys(updated).forEach((id) => {
-          updated[id] = [
-            ...updated[id],
+      // Append success message to active chat if selected
+      if (activeCustomerId) {
+        setMessagesByCustomer((prev) => ({
+          ...prev,
+          [activeCustomerId]: [
+            ...(prev[activeCustomerId] || []),
             {
-              id: `sys-${Date.now()}-${id}`,
-              text: textLog,
+              id: `sys-${Date.now()}`,
+              text: "📡 WhatsApp conectado com sucesso! O robô de respostas automáticas está ATIVO.",
               sender: "system",
               timestamp: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
             }
-          ];
-        });
-        return updated;
-      });
+          ]
+        }));
+      }
     }
   };
 
@@ -192,12 +298,25 @@ export default function App() {
   };
 
   // Core Action: Send a message within a customer chat thread
-  const handleSendMessage = (
+  const handleSendMessage = async (
     customerId: string,
     text: string,
     sender: "user" | "bot" | "system",
     saleDetected: { product: string; value: number } | null = null
   ) => {
+    // If we are sending a real message as the "bot" (representing the seller) and we are connected to WhatsApp
+    if (sender === "bot" && isWhatsAppConnected === "connected") {
+      try {
+        await fetch("/api/whatsapp/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to: customerId, text }),
+        });
+      } catch (err) {
+        console.error("Erro ao enviar mensagem real:", err);
+      }
+    }
+
     const newMessage: Message = {
       id: `msg-${Date.now()}`,
       text,

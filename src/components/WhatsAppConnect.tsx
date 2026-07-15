@@ -12,79 +12,79 @@ export default function WhatsAppConnect({ status, onStatusChange }: WhatsAppConn
     "[ZAPBOT] Sistema pronto para inicialização.",
     "[ZAPBOT] Aguardando clique para gerar canal seguro..."
   ]);
-  const [progressStep, setProgressStep] = useState(0);
-  const [countdown, setCountdown] = useState(45);
+  const [realQr, setRealQr] = useState<string | null>(null);
 
   const addLog = (msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString("pt-BR")}] ${msg}`]);
   };
 
-  // Simulated connection steps
+  // Poll connection status & QR code from backend
   useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (status === "connecting") {
-      setProgressStep(1);
-      setLogs([]);
-      addLog("Iniciando instância segura do navegador headless...");
-      
-      timer = setTimeout(() => {
-        setProgressStep(2);
-        addLog("WhatsApp Web v2.3000.10129 carregado.");
-        addLog("Gerando par de chaves e QR Code de autenticação...");
-      }, 1000);
+    let lastStatus = status;
+    let lastQr = realQr;
 
-      const timer2 = setTimeout(() => {
-        setProgressStep(3);
-        addLog("QR Code pronto! Aguardando escaneamento no aplicativo do celular...");
-      }, 2500);
-
-      const timer3 = setTimeout(() => {
-        setProgressStep(4);
-        addLog("Autenticação detectada! Iniciando aperto de mão seguro (Handshake)...");
-        addLog("Sincronizando contatos e histórico de mensagens recentes...");
-      }, 5000);
-
-      const timer4 = setTimeout(() => {
-        onStatusChange("connected");
-        addLog("Conexão estabelecida com sucesso! Robô pronto para atendimento.");
-      }, 7000);
-
-      return () => {
-        clearTimeout(timer);
-        clearTimeout(timer2);
-        clearTimeout(timer3);
-        clearTimeout(timer4);
-      };
-    }
-  }, [status]);
-
-  // QR Code expiration countdown simulation
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (status === "disconnected") {
-      interval = setInterval(() => {
-        setCountdown((prev) => {
-          if (prev <= 1) {
-            addLog("QR Code expirado. Gerando novo token...");
-            return 45;
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch("/api/whatsapp/status");
+        if (res.ok) {
+          const data = await res.json();
+          
+          if (data.status !== lastStatus) {
+            if (data.status === "connecting") {
+              addLog("Iniciando conexão com o WhatsApp no servidor...");
+            } else if (data.status === "connected") {
+              addLog("📡 Conexão estabelecida com sucesso! Robô ativo para atendimento.");
+            } else if (data.status === "disconnected") {
+              addLog("⚠️ WhatsApp desconectado ou deslogado.");
+            }
+            lastStatus = data.status;
+            onStatusChange(data.status);
           }
-          return prev - 1;
-        });
-      }, 1000);
-    }
-    return () => clearInterval(interval);
-  }, [status]);
 
-  const handleStartConnection = () => {
+          if (data.qr !== lastQr) {
+            if (data.qr) {
+              addLog("Novo QR Code gerado pelo servidor. Por favor, escaneie com seu celular.");
+            }
+            lastQr = data.qr;
+            setRealQr(data.qr);
+          }
+        }
+      } catch (err) {
+        // silent error
+      }
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 1500);
+    return () => clearInterval(interval);
+  }, [onStatusChange, status, realQr]);
+
+  const handleStartConnection = async () => {
     onStatusChange("connecting");
+    addLog("Iniciando conexão com o WhatsApp...");
+    try {
+      const res = await fetch("/api/whatsapp/connect", { method: "POST" });
+      if (res.ok) {
+        addLog("Conexão iniciada. Aguardando QR Code...");
+      } else {
+        addLog("Erro ao solicitar conexão ao servidor.");
+      }
+    } catch (err) {
+      addLog("Erro de rede ao solicitar conexão.");
+    }
   };
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
     onStatusChange("disconnected");
-    setLogs((prev) => [
-      ...prev,
-      `[${new Date().toLocaleTimeString("pt-BR")}] [ZAPBOT] Sessão encerrada pelo usuário.`
-    ]);
+    addLog("Desconectando sessão do WhatsApp comercial...");
+    try {
+      const res = await fetch("/api/whatsapp/disconnect", { method: "POST" });
+      if (res.ok) {
+        addLog("Sessão desconectada com sucesso do servidor.");
+      }
+    } catch (err) {
+      addLog("Erro ao desconectar sessão no servidor.");
+    }
   };
 
   return (
@@ -115,61 +115,51 @@ export default function WhatsAppConnect({ status, onStatusChange }: WhatsAppConn
 
         {/* Dynamic Display based on State */}
         {status === "disconnected" && (
-          <div className="flex flex-col md:flex-row items-center gap-6 py-4" id="disconnected-qr-panel">
+          <div className="flex flex-col items-center justify-center py-10 space-y-5" id="start-connection-panel">
+            <div className="p-4 bg-indigo-50 border border-indigo-100 text-indigo-600 rounded-3xl shadow-sm inline-flex">
+              <QrCode className="w-12 h-12" />
+            </div>
+            <div className="text-center space-y-2 max-w-sm">
+              <h5 className="font-bold text-base text-slate-800">Conecte seu WhatsApp Real</h5>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Clique no botão abaixo para iniciar o processo de conexão e gerar o QR Code de autenticação seguro.
+              </p>
+            </div>
+            <button
+              onClick={handleStartConnection}
+              className="px-6 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-lg hover:shadow-xl transition-all cursor-pointer font-sans"
+            >
+              Gerar QR Code de Conexão real
+            </button>
+          </div>
+        )}
+
+        {status === "connecting" && (
+          <div className="flex flex-col md:flex-row items-center gap-6 py-4" id="connecting-qr-panel">
             {/* QR Code Graphic Representation */}
             <div className="relative group shrink-0 border-2 border-indigo-100 p-4 rounded-2xl bg-slate-50 shadow-inner flex flex-col items-center">
               <div className="relative w-44 h-44 bg-white rounded-lg flex items-center justify-center p-2 border border-slate-200">
-                {/* Simulated QR Code using CSS and SVG */}
-                <svg viewBox="0 0 100 100" className="w-full h-full text-slate-800">
-                  {/* Outer corner squares */}
-                  <rect x="5" y="5" width="25" height="25" fill="currentColor" rx="2" />
-                  <rect x="9" y="9" width="17" height="17" fill="white" rx="1" />
-                  <rect x="13" y="13" width="9" height="9" fill="currentColor" rx="0.5" />
+                {realQr ? (
+                  <img src={realQr} alt="WhatsApp QR Code" className="w-full h-full object-contain" />
+                ) : (
+                  <div className="flex flex-col items-center justify-center space-y-2 text-slate-400">
+                    <RefreshCw className="w-8 h-8 animate-spin text-indigo-500" />
+                    <span className="text-[10px] font-semibold">Gerando QR...</span>
+                  </div>
+                )}
+              </div>
 
-                  <rect x="70" y="5" width="25" height="25" fill="currentColor" rx="2" />
-                  <rect x="74" y="9" width="17" height="17" fill="white" rx="1" />
-                  <rect x="78" y="13" width="9" height="9" fill="currentColor" rx="0.5" />
-
-                  <rect x="5" y="70" width="25" height="25" fill="currentColor" rx="2" />
-                  <rect x="9" y="74" width="17" height="17" fill="white" rx="1" />
-                  <rect x="13" y="78" width="9" height="9" fill="currentColor" rx="0.5" />
-
-                  {/* Random pixels */}
-                  <rect x="40" y="5" width="10" height="5" fill="currentColor" />
-                  <rect x="45" y="15" width="15" height="10" fill="currentColor" />
-                  <rect x="35" y="28" width="8" height="8" fill="currentColor" />
-                  <rect x="5" y="35" width="15" height="10" fill="currentColor" />
-                  <rect x="25" y="35" width="20" height="5" fill="currentColor" />
-                  <rect x="50" y="35" width="10" height="15" fill="currentColor" />
-                  <rect x="5" y="55" width="10" height="5" fill="currentColor" />
-                  <rect x="20" y="50" width="15" height="15" fill="currentColor" />
-                  <rect x="40" y="60" width="5" height="10" fill="currentColor" />
-                  <rect x="50" y="55" width="15" height="10" fill="currentColor" />
-                  <rect x="70" y="40" width="25" height="10" fill="currentColor" />
-                  <rect x="75" y="55" width="15" height="15" fill="currentColor" />
-                  <rect x="70" y="75" width="10" height="10" fill="currentColor" />
-                  <rect x="85" y="70" width="10" height="10" fill="currentColor" />
-                  <rect x="85" y="85" width="10" height="10" fill="currentColor" />
-
-                  {/* Center branding icon anchor */}
-                  <rect x="42" y="42" width="16" height="16" fill="white" rx="2" />
-                </svg>
-                {/* Simulated center Logo */}
-                <div className="absolute bg-indigo-600 rounded p-1 text-white shadow-md">
-                  <Phone className="w-4 h-4 fill-current" />
+              {realQr && (
+                <div className="mt-3.5 text-center">
+                  <p className="text-[10px] font-semibold text-indigo-600 font-bold">
+                    Escaneie agora mesmo!
+                  </p>
                 </div>
-              </div>
-
-              {/* Countdown overlay/badge */}
-              <div className="mt-3.5 text-center">
-                <p className="text-[10px] font-semibold text-slate-400">
-                  Expira em <span className="font-mono text-indigo-600 font-bold">{countdown}s</span>
-                </p>
-              </div>
+              )}
             </div>
 
             {/* Instruction Steps */}
-            <div className="space-y-4">
+            <div className="space-y-4 flex-1">
               <h5 className="font-bold text-sm text-slate-800">Siga as instruções para conectar:</h5>
               <ol className="space-y-3 text-xs text-slate-600 leading-relaxed list-decimal pl-4">
                 <li>Abra o <strong>WhatsApp</strong> no seu celular comercial ou pessoal.</li>
@@ -179,41 +169,11 @@ export default function WhatsAppConnect({ status, onStatusChange }: WhatsAppConn
               </ol>
 
               <button
-                onClick={handleStartConnection}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-indigo-600 text-white font-semibold text-xs hover:bg-indigo-700 shadow-md hover:shadow-lg transition-all"
+                onClick={handleDisconnect}
+                className="px-4 py-2 text-rose-600 border border-rose-100 bg-rose-50/50 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all cursor-pointer"
               >
-                <QrCode className="w-4 h-4" />
-                Simular Leitura do QR Code
+                Cancelar Conexão
               </button>
-            </div>
-          </div>
-        )}
-
-        {status === "connecting" && (
-          <div className="py-12 flex flex-col items-center justify-center space-y-5" id="connecting-panel">
-            <div className="relative">
-              <div className="w-16 h-16 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin"></div>
-              <Phone className="w-6 h-6 text-indigo-600 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
-            </div>
-            <div className="text-center space-y-1.5 max-w-sm">
-              <h5 className="font-bold text-sm text-slate-800">
-                {progressStep === 1 && "Iniciando Canal Headless..."}
-                {progressStep === 2 && "Carregando Zap Web..."}
-                {progressStep === 3 && "Aguardando Confirmação..."}
-                {progressStep === 4 && "Handshake de Chaves..."}
-              </h5>
-              <div className="w-48 h-1.5 bg-slate-100 rounded-full mx-auto overflow-hidden border border-slate-200">
-                <div
-                  className="h-full bg-indigo-600 transition-all duration-300 rounded-full"
-                  style={{ width: `${progressStep * 25}%` }}
-                ></div>
-              </div>
-              <p className="text-xs text-slate-400">
-                {progressStep === 1 && "Estabelecendo túnel seguro com o provedor."}
-                {progressStep === 2 && "Sincronizando bibliotecas do protocolo WA."}
-                {progressStep === 3 && "Verificando assinatura digital do dispositivo."}
-                {progressStep === 4 && "Baixando dados de chats. Quase pronto!"}
-              </p>
             </div>
           </div>
         )}
@@ -236,17 +196,17 @@ export default function WhatsAppConnect({ status, onStatusChange }: WhatsAppConn
               </div>
 
               <div className="space-y-2 border-t border-slate-100 pt-3 text-xs text-slate-600" id="session-metadata">
-                <p className="flex justify-between">
+                <p className="flex justify-between gap-4">
                   <span className="text-slate-400">Canal Ativo:</span>
-                  <span className="font-semibold text-slate-800">+55 (11) 98765-4321</span>
+                  <span className="font-semibold text-slate-800">Seu WhatsApp Conectado</span>
                 </p>
-                <p className="flex justify-between">
+                <p className="flex justify-between gap-4">
                   <span className="text-slate-400">Tipo de Conta:</span>
                   <span className="font-semibold text-indigo-600 font-mono text-[10px] bg-indigo-50 border border-indigo-100 px-1 py-0.5 rounded">
-                    WA BUSINESS
+                    WA MULTI-DEVICE
                   </span>
                 </p>
-                <p className="flex justify-between">
+                <p className="flex justify-between gap-4">
                   <span className="text-slate-400">Hora Conexão:</span>
                   <span className="font-semibold text-slate-800">Hoje, {new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
                 </p>
@@ -254,7 +214,7 @@ export default function WhatsAppConnect({ status, onStatusChange }: WhatsAppConn
 
               <button
                 onClick={handleDisconnect}
-                className="w-full text-center py-2 rounded-xl text-xs font-semibold text-rose-600 border border-rose-100 bg-rose-50/50 hover:bg-rose-50 transition-colors"
+                className="w-full text-center py-2.5 rounded-xl text-xs font-semibold text-rose-600 border border-rose-100 bg-rose-50/50 hover:bg-rose-50 transition-colors cursor-pointer"
               >
                 Desconectar Sessão
               </button>
