@@ -1,0 +1,6 @@
+{
+  "name": "ZapBot - WhatsApp CRM & Chatbot",
+  "description": "Conecte seu WhatsApp, configure respostas automáticas e gerencie um robô inteligente com IA para atender clientes, identificar leads e impulsionar vendas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
